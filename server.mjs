@@ -7,6 +7,26 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: false });
 
+// Lista de proxies activos extraídos de tu captura (IP y Puerto)
+const PROXIES = [
+  { host: '139.60.209.2', port: 80, type: 'http' },
+  { host: '32.223.6.94', port: 80, type: 'http' },
+  { host: '15.204.243.210', port: 80, type: 'http' },
+  { host: '159.65.230.46', port: 8088, type: 'http' },
+  { host: '142.93.202.130', port: 3128, type: 'http' },
+  { host: '174.138.119.88', port: 80, type: 'http' },
+  { host: '50.122.86.118', port: 80, type: 'http' },
+  { host: '137.66.1.45', port: 80, type: 'http' },
+  { host: '143.246.138.227', port: 80, type: 'http' },
+  { host: '47.85.161.37', port: 3128, type: 'http' },
+  { host: '31.56.65.108', port: 80, type: 'http' }
+];
+
+function getRandomProxy() {
+  const p = PROXIES[Math.floor(Math.random() * PROXIES.length)];
+  return `${p.type}://${p.host}:${p.port}`;
+}
+
 app.get('/', async (req, reply) => {
   const htmlPath = path.join(__dirname, 'index.html');
   if (!fs.existsSync(htmlPath)) return reply.status(404).send('index.html no encontrado');
@@ -37,7 +57,7 @@ app.get('/api/spotify-import', async (req, reply) => {
   }
 });
 
-// Búsqueda conectada directamente a Invidious v1 con múltiples nodos de respaldo
+// Búsqueda conectada a Invidious con respaldo de nodos globales
 app.get('/api/search', async (req, reply) => {
   const query = (req.query.q || '').trim();
   if (!query) return [];
