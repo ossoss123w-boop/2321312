@@ -7,6 +7,6 @@
   },
   "dependencies": {
     "fastify": "^4.29.1",
-    "youtubei.js": "^17.2.0"
+    "ytdl-core": "^4.11.5"
   }
 }
