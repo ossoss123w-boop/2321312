@@ -13,21 +13,40 @@ app.get('/', async (req, reply) => {
   reply.type('text/html').send(fs.readFileSync(htmlPath, 'utf-8'));
 });
 
-// Proxy de flujo crudo: extrae el enlace directo de audio desde Piped/Invidious y lo sirve sin cortes
+// Función para obtener dinámicamente instancias vivas desde los directorios oficiales públicos
+async function getLiveInstances(type = 'piped') {
+  try {
+    const url = type === 'piped' 
+      ? 'https://piped-instances.kavin.rocks/' 
+      : 'https://api.invidious.io/instances.json?sort_by=type&sort_order=desc';
+    
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (type === 'piped' && Array.isArray(data)) {
+        return data.map(i => i.api_url || i.apiUrl).filter(Boolean);
+      } else if (type === 'invidious' && Array.isArray(data)) {
+        return data.map(i => i[1]?.uri).filter(Boolean);
+      }
+    }
+  } catch (e) {}
+  
+  // Fallback estático si el directorio principal tarda
+  return type === 'piped' 
+    ? ['https://pipedapi.kavin.rocks', 'https://api.piped.projectsegfau.lt'] 
+    : ['https://vid.priv.au', 'https://invidious.nerdvpn.de'];
+}
+
 app.get('/api/stream', async (req, reply) => {
   const videoId = req.query.id;
   if (!videoId) return reply.status(400).send('ID no proporcionado');
 
-  const instances = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.in.projectsegfau.lt',
-    'https://api.piped.privacy.com.de'
-  ];
+  const instances = await getLiveInstances('piped');
 
   for (const inst of instances) {
     try {
       const res = await fetch(`${inst}/streams/${videoId}`, {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(4000)
       });
       if (res.ok) {
         const json = await res.json();
@@ -36,7 +55,7 @@ app.get('/api/stream', async (req, reply) => {
         if (audioStream && audioStream.url) {
           const streamRes = await fetch(audioStream.url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(6000)
           });
           if (streamRes.ok) {
             reply.type(audioStream.mimeType || 'audio/mp4');
@@ -47,24 +66,19 @@ app.get('/api/stream', async (req, reply) => {
     } catch (e) {}
   }
 
-  return reply.status(502).send('No se pudo resolver el stream de audio');
+  return reply.status(502).send('Stream no disponible');
 });
 
-// Buscador global masivo mediante instancias Piped públicas
 app.get('/api/search', async (req, reply) => {
   const query = (req.query.q || '').trim();
   if (!query) return [];
 
-  const instances = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.in.projectsegfau.lt',
-    'https://api.piped.privacy.com.de'
-  ];
+  const instances = await getLiveInstances('piped');
 
   for (const inst of instances) {
     try {
       const res = await fetch(`${inst}/search?q=${encodeURIComponent(query)}&filter=music_songs`, {
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(4000)
       });
       if (res.ok) {
         const json = await res.json();
