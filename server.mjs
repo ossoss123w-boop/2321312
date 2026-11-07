@@ -37,7 +37,7 @@ app.get('/api/spotify-import', async (req, reply) => {
   }
 });
 
-// Búsqueda robusta conectada directamente a Invidious v1 que devuelve streamUrl directo sin romper el reproductor
+// Búsqueda conectada directamente a Invidious v1 con múltiples nodos de respaldo
 app.get('/api/search', async (req, reply) => {
   const query = (req.query.q || '').trim();
   if (!query) return [];
