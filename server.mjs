@@ -13,43 +13,59 @@ app.get('/', async (req, reply) => {
   reply.type('text/html').send(fs.readFileSync(htmlPath, 'utf-8'));
 });
 
-const INVIDIOUS_INSTANCES = [
-  'https://inv.nadeko.net',
-  'https://invidious.nerdvpn.de',
-  'https://invidious.tiekoetter.com'
-];
-
-async function fetchFromInvidious(endpoint) {
-  for (const instance of INVIDIOUS_INSTANCES) {
-    try {
-      const res = await fetch(`${instance}/api/v1${endpoint}`, {
-        signal: AbortSignal.timeout(4000)
-      });
-      if (res.ok) {
-        const json = await res.json();
-        return { data: json, instance };
-      }
-    } catch (e) {}
-  }
-  return { data: null, instance: null };
-}
-
+// Buscador multi-fuente: Jamendo (catálogo global libre y masivo) + Invidious secundario
 app.get('/api/search', async (req, reply) => {
   const query = (req.query.q || '').trim();
   if (!query) return [];
 
-  const { data, instance } = await fetchFromInvidious(`/search?q=${encodeURIComponent(query)}&type=video`);
-  if (!data) return reply.status(503).send({ error: 'Servicio no disponible' });
+  // 1. Intentar buscar en Jamendo API (millones de canciones con audio directo)
+  try {
+    const res = await fetch(`https://api.jamendo.com/v3.0/tracks/?client_id=5993df08&format=json&limit=25&search=${encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(5000)
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.results && json.results.length > 0) {
+        return json.results.map(track => ({
+          id: track.id,
+          title: track.name,
+          artist: track.artist_name,
+          album: track.album_name || 'Single',
+          durationSec: track.duration,
+          artworkUrl: track.album_image || track.image || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&h=300&fit=crop',
+          streamUrl: track.audio
+        }));
+      }
+    }
+  } catch (e) {
+    console.error('Jamendo fallback:', e.message);
+  }
 
-  return data.map(item => ({
-    id: item.videoId,
-    title: item.title,
-    artist: item.author,
-    album: 'Single',
-    durationSec: item.lengthSeconds,
-    artworkUrl: item.videoThumbnails?.find(t => t.quality === 'medium')?.url || item.videoThumbnails?.[0]?.url || '',
-    streamUrl: `${instance}/latest_version?id=${item.videoId}&itag=140`
-  }));
+  // 2. Si falla Jamendo, recurrir a instancias estables de Invidious con reintentos
+  const instances = ['https://vid.priv.au', 'https://invidious.nerdvpn.de', 'https://inv.nadeko.net'];
+  for (const inst of instances) {
+    try {
+      const res = await fetch(`${inst}/api/v1/search?q=${encodeURIComponent(query)}&type=video`, {
+        signal: AbortSignal.timeout(4000)
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json) && json.length > 0) {
+          return json.map(item => ({
+            id: item.videoId,
+            title: item.title,
+            artist: item.author,
+            album: 'YouTube Stream',
+            durationSec: item.lengthSeconds,
+            artworkUrl: item.videoThumbnails?.[0]?.url || '',
+            streamUrl: `${inst}/latest_version?id=${item.videoId}&itag=140`
+          }));
+        }
+      }
+    } catch (e) {}
+  }
+
+  return [];
 });
 
 app.post('/api/upload', async (req, reply) => {
