@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ytdl from 'ytdl-core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: false });
@@ -13,93 +14,91 @@ app.get('/', async (req, reply) => {
   reply.type('text/html').send(fs.readFileSync(htmlPath, 'utf-8'));
 });
 
-// Función para obtener dinámicamente instancias vivas desde los directorios oficiales públicos
-async function getLiveInstances(type = 'piped') {
-  try {
-    const url = type === 'piped' 
-      ? 'https://piped-instances.kavin.rocks/' 
-      : 'https://api.invidious.io/instances.json?sort_by=type&sort_order=desc';
-    
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (type === 'piped' && Array.isArray(data)) {
-        return data.map(i => i.api_url || i.apiUrl).filter(Boolean);
-      } else if (type === 'invidious' && Array.isArray(data)) {
-        return data.map(i => i[1]?.uri).filter(Boolean);
-      }
-    }
-  } catch (e) {}
-  
-  // Fallback estático si el directorio principal tarda
-  return type === 'piped' 
-    ? ['https://pipedapi.kavin.rocks', 'https://api.piped.projectsegfau.lt'] 
-    : ['https://vid.priv.au', 'https://invidious.nerdvpn.de'];
-}
-
+// Endpoint de streaming directo usando ytdl-core
 app.get('/api/stream', async (req, reply) => {
   const videoId = req.query.id;
   if (!videoId) return reply.status(400).send('ID no proporcionado');
 
-  const instances = await getLiveInstances('piped');
+  try {
+    const videoURL = `https://www.youtube.com/watch?v=${videoId}`;
+    if (!ytdl.validateID(videoId) && !ytdl.validateURL(videoURL)) {
+      return reply.status(400).send('ID de video inválido');
+    }
 
-  for (const inst of instances) {
-    try {
-      const res = await fetch(`${inst}/streams/${videoId}`, {
-        signal: AbortSignal.timeout(4000)
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const audioStream = json.audioStreams?.find(s => s.mimeType?.includes('audio/mp4') || s.mimeType?.includes('audio/webm')) || json.audioStreams?.[0];
-        
-        if (audioStream && audioStream.url) {
-          const streamRes = await fetch(audioStream.url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-            signal: AbortSignal.timeout(6000)
-          });
-          if (streamRes.ok) {
-            reply.type(audioStream.mimeType || 'audio/mp4');
-            return reply.send(streamRes.body);
-          }
-        }
-      }
-    } catch (e) {}
+    const stream = ytdl(videoURL, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+      highWaterMark: 1 << 25
+    });
+
+    reply.type('audio/mp4');
+    return reply.send(stream);
+  } catch (e) {
+    console.error('Error en streaming:', e.message);
+    return reply.status(500).send('Error al reproducir el audio');
   }
-
-  return reply.status(502).send('Stream no disponible');
 });
 
+// Endpoint de búsqueda utilizando la API interna de YouTube a través de ytdl
 app.get('/api/search', async (req, reply) => {
   const query = (req.query.q || '').trim();
   if (!query) return [];
 
-  const instances = await getLiveInstances('piped');
+  try {
+    const searchResult = await ytdl.getInfo(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`).catch(() => null);
+    
+    // Método alternativo de búsqueda ligera si getInfo directo falla
+    const res = await fetch(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    
+    const html = await res.text();
+    const match = html.match(/var ytInitialData = ({.*?});<\/script>/);
+    
+    if (!match) return [];
 
-  for (const inst of instances) {
-    try {
-      const res = await fetch(`${inst}/search?q=${encodeURIComponent(query)}&filter=music_songs`, {
-        signal: AbortSignal.timeout(4000)
-      });
-      if (res.ok) {
-        const json = await res.json();
-        const items = json.items || json;
-        if (Array.isArray(items) && items.length > 0) {
-          return items.map(item => ({
-            id: item.url?.split('=')[1] || item.id,
-            title: item.title,
-            artist: item.uploaderName || item.artist || 'Desconocido',
-            album: 'Global Stream',
-            durationSec: item.duration || 180,
-            artworkUrl: item.thumbnail || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&h=300&fit=crop',
-            streamUrl: `/api/stream?id=${item.url?.split('=')[1] || item.id}`
-          }));
+    const data = JSON.parse(match[1]);
+    const contents = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents;
+    
+    let items = [];
+    if (contents) {
+      for (const section of contents) {
+        const videoList = section.itemSectionRenderer?.contents;
+        if (videoList) {
+          for (const vid of videoList) {
+            if (vid.videoRenderer) {
+              const v = vid.videoRenderer;
+              items.push({
+                id: v.videoId,
+                title: v.title?.runs?.[0]?.text || 'Sin título',
+                artist: v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || 'Artista',
+                album: 'YouTube',
+                durationSec: parseDuration(v.lengthText?.simpleText),
+                artworkUrl: v.thumbnail?.thumbnails?.[v.thumbnail.thumbnails.length - 1]?.url || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&h=300&fit=crop',
+                streamUrl: `/api/stream?id=${v.videoId}`
+              });
+            }
+          }
         }
       }
-    } catch (e) {}
-  }
+    }
 
-  return [];
+    return items.slice(0, 15);
+  } catch (e) {
+    console.error('Error en búsqueda:', e.message);
+    return [];
+  }
 });
+
+function parseDuration(str) {
+  if (!str) return 180;
+  const parts = str.split(':').map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 180;
+}
 
 app.post('/api/upload', async (req, reply) => {
   try {
